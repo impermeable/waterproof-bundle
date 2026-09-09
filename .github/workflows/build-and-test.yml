@@ -17,6 +17,10 @@ on:
         description: 'Waterproof extension version from Open VSX'
         required: false
         default: '0.12.2'
+      vscodium_version:
+        description: 'VSCodium version'
+        required: false
+        default: '1.126.04524'
 
 # The build matrix targets the Waterproof proof-sheet bundle described in
 # README.md ("Proof-sheet bundle commands").  REPO_REF is pinned so a push
@@ -25,11 +29,15 @@ env:
   REPO_URL: ${{ github.event.inputs.repo_url || 'https://github.com/impermeable/introduction-to-proof-sheets-lean' }}
   REPO_REF: ${{ github.event.inputs.repo_ref || '7389f0184dd34d587d1063aae70440ebfc6d3a8d' }}
   WATERPROOF_VERSION: ${{ github.event.inputs.waterproof_version || '0.12.2' }}
-  # Note the flat filename: the path in README.md's example command
-  # (Bewijzen/Lecture1/sheet1/_conjunction.lean) does not exist in the repo.
-  # --open-file is not validated by the bundler, so a wrong path silently
-  # opens nothing.
-  OPEN_FILE: 'Bewijzen/Lecture1/sheet1_conjunction.lean'
+  # Pin VSCodium rather than tracking latest. Two separate failures came from
+  # resolving "latest" at build time:
+  #   * VSCodium publishes a release tag before uploading every platform's
+  #     asset. A Windows build 404'd on VSCodium-win32-x64-1.135.06055.zip an
+  #     hour after that tag appeared; the asset landed 46 minutes later.
+  #   * Resolving latest calls api.github.com unauthenticated, and macOS
+  #     runners share egress IPs, so it returned 403 rate limit exceeded.
+  # Pinning also removes the only GitHub API call in the build.
+  VSCODIUM_VERSION: ${{ github.event.inputs.vscodium_version || '1.126.04524' }}
 
 jobs:
   unit-tests:
@@ -61,10 +69,10 @@ jobs:
         with:
           python-version: '3.12'
 
-      # --open-file is deliberately omitted here: combining it with
-      # --waterproof on Windows is rejected by the bundler (see "Known
-      # issues" in README.md -- VS Code opens a cold-start file argument in
-      # its text editor instead of the Waterproof custom editor).
+      # No --open-file: the bundler rejects it for Waterproof bundles on
+      # every platform (see "Known issues" in README.md -- VS Code opens a
+      # cold-start file argument in its text editor instead of the Waterproof
+      # custom editor).
       - name: Build Windows Waterproof bundle natively
         shell: bash
         run: |
@@ -72,6 +80,7 @@ jobs:
             --ref "$REPO_REF" \
             --platform windows \
             --waterproof-version "$WATERPROOF_VERSION" \
+            --vscodium-version "$VSCODIUM_VERSION" \
             --allow-unsolved \
             --work-dir bundle-work \
             --output bundle.zip
@@ -116,8 +125,8 @@ jobs:
             --ref "$REPO_REF" \
             --platform linux-x64 \
             --waterproof-version "$WATERPROOF_VERSION" \
+            --vscodium-version "$VSCODIUM_VERSION" \
             --allow-unsolved \
-            --open-file "$OPEN_FILE" \
             --work-dir /tmp/bundle-work \
             --output /tmp/bundle-linux.zip
       # Tier 1 runs against the assembled directory rather than the zip:
@@ -160,8 +169,8 @@ jobs:
             --ref "$REPO_REF" \
             --platform linux-arm64 \
             --waterproof-version "$WATERPROOF_VERSION" \
+            --vscodium-version "$VSCODIUM_VERSION" \
             --allow-unsolved \
-            --open-file "$OPEN_FILE" \
             --work-dir /tmp/bundle-work \
             --output /tmp/bundle-linux-arm64.zip
       # Tier 1 runs against the assembled directory rather than the zip:
@@ -207,8 +216,8 @@ jobs:
             --ref "$REPO_REF" \
             --platform darwin-arm64 \
             --waterproof-version "$WATERPROOF_VERSION" \
+            --vscodium-version "$VSCODIUM_VERSION" \
             --allow-unsolved \
-            --open-file "$OPEN_FILE" \
             --work-dir bundle-work \
             --output bundle-macos-arm64.zip
       # Tier 1 runs against the assembled directory rather than the zip:

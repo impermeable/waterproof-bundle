@@ -136,7 +136,7 @@ python3 bundle.py https://github.com/impermeable/introduction-to-proof-sheets-le
 **Pinned Linux x86-64:**
 
 ```bash
-python3 bundle.py https://github.com/impermeable/introduction-to-proof-sheets-lean --ref e62b9166113d3f48b82a09bd5e728fbd779608cc --platform linux-x64 --vscodium-version 1.126.04524 --waterproof-version 0.12.0 --allow-unsolved --work-dir ../tmp/bewijzen-waterproof-linux-x64 --clean-work-dir --output ../bewijzen-waterproof-linux-x64.zip --open-file "Bewijzen/Lecture1/sheet1_conjunction.lean"
+python3 bundle.py https://github.com/impermeable/introduction-to-proof-sheets-lean --ref e62b9166113d3f48b82a09bd5e728fbd779608cc --platform linux-x64 --vscodium-version 1.126.04524 --waterproof-version 0.12.0 --allow-unsolved --work-dir ../tmp/bewijzen-waterproof-linux-x64 --clean-work-dir --output ../bewijzen-waterproof-linux-x64.zip
 ```
 
 The latest commands intentionally omit all three pins: they use the repository's
@@ -152,7 +152,7 @@ python3 bundle.py https://github.com/impermeable/introduction-to-proof-sheets-le
 **Latest Linux x86-64:**
 
 ```bash
-python3 bundle.py https://github.com/impermeable/introduction-to-proof-sheets-lean --platform linux-x64 --waterproof --allow-unsolved --work-dir ../tmp/bewijzen-waterproof-linux-x64-latest --clean-work-dir --output ../bewijzen-waterproof-linux-x64-latest.zip --open-file "Bewijzen/Lecture1/sheet1_conjunction.lean"
+python3 bundle.py https://github.com/impermeable/introduction-to-proof-sheets-lean --platform linux-x64 --waterproof --allow-unsolved --work-dir ../tmp/bewijzen-waterproof-linux-x64-latest --clean-work-dir --output ../bewijzen-waterproof-linux-x64-latest.zip
 ```
 
 For ARM64 Linux, replace `linux-x64` with `linux-arm64` and adjust the output
@@ -246,8 +246,8 @@ Students need none of these.
 --open-file NAME
     .lean file to auto-open on the first launch of an extracted bundle
     (default: no file; the workspace opens without an editor tab). Later
-    launches restore the student's editor state. Not supported when combining
-    --waterproof with --platform windows; see Known issues below.
+    launches restore the student's editor state. Not supported for Waterproof
+    bundles on any platform; see Known issues below.
 
 --no-zip
     Assemble the bundle directory without creating a zip
@@ -322,14 +322,21 @@ python bundle.py https://github.com/PatrickMassot/MDD154 --platform linux-x64 --
 
 ## Known issues
 
-- **Opening a default Waterproof file on Windows.** Combining `--open-file`,
-  `--waterproof`, and `--platform windows` is rejected. On a cold start, VS Code
+- **Opening a default Waterproof file.** Combining `--open-file` with
+  `--waterproof` is rejected on every platform. On a cold start, VS Code
   currently opens a file argument in its text editor instead of honoring
   `workbench.editorAssociations`; opening the file after startup uses the
   configured custom editor correctly. See
   [VS Code issue #325506](https://github.com/microsoft/vscode/issues/325506).
-  Windows Waterproof bundles therefore open only the project workspace on first
-  launch. Windows bundles using the regular Lean 4 extension are unaffected.
+
+  This was originally believed to be Windows-only. CI then caught it on
+  Linux x64 — the sheet opened in the plain text editor, so no Waterproof
+  webview was ever created — while the arm64 job passed on an identically
+  built bundle, which makes it a race rather than a platform trait. A student
+  hitting the losing side would see their first sheet as raw Lean source, so
+  the flag is now refused for Waterproof bundles everywhere. Waterproof
+  bundles therefore open only the project workspace on first launch; bundles
+  using the regular Lean 4 extension are unaffected.
 
 - **Git shim on Windows.** The lean4 VS Code extension and VS Code's
   built-in git extension both probe for `git` on PATH at startup. Rather
