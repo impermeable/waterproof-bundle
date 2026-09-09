@@ -19,6 +19,12 @@ import { openSheet } from '../helpers/sheet';
 import { Page } from 'playwright';
 import * as fs from 'fs';
 
+// Serial: the editing test below is what wakes Waterproof's checker, and the
+// goal-state test reads the proof state it produces. A retry in a fresh worker
+// would otherwise re-run beforeAll but not the edit, leaving the later tests
+// inspecting an untouched sheet. Serial mode retries the group as a unit.
+test.describe.configure({ mode: 'serial' });
+
 let result: LaunchResult;
 
 test.beforeAll(async () => {

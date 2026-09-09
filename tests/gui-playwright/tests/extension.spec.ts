@@ -12,7 +12,25 @@ import { test, expect } from '@playwright/test';
 import { launchVSCodium, closeVSCodium, LaunchResult } from '../helpers/launch';
 import { findEditorFrame } from '../helpers/frames';
 import { openSheet, SHEET_BASENAME } from '../helpers/sheet';
+import { Page } from 'playwright';
 import * as fs from 'fs';
+
+/** Join the status bar items into one string. */
+async function readStatusBar(page: Page): Promise<string> {
+    return page.evaluate(() =>
+        Array.from(document.querySelectorAll('.statusbar-item'))
+            .map(e => (e as HTMLElement).innerText.trim())
+            .filter(Boolean)
+            .join(' | '),
+    ).catch(() => '');
+}
+
+// Serial: these tests share one VSCodium instance and build on each other —
+// the sheet opened below is what the later tests inspect. Without this, a
+// failure retries in a fresh worker that re-runs beforeAll but not the test
+// that opened the sheet, so every later test fails looking for an editor
+// webview that was never created. Serial mode retries the group as a unit.
+test.describe.configure({ mode: 'serial' });
 
 let result: LaunchResult;
 
@@ -92,17 +110,28 @@ test('the Lean checker is the one Waterproof started', async () => {
     // starts only its Lean language server and never probes for coq-lsp,
     // which this bundle deliberately does not ship. Waterproof advertises the
     // running checker in the status bar.
-    const statusbar = await page.evaluate(() =>
-        Array.from(document.querySelectorAll('.statusbar-item'))
-            .map(e => (e as HTMLElement).innerText.trim())
-            .filter(Boolean)
-            .join(' | '),
-    );
-    console.log(`  Status bar: ${statusbar}`);
+    //
+    // Poll: the label reads "Waterproof checker (starting...)" until
+    // `lake serve` is up, and only then "(lean4)". Sampling once passed on
+    // the Linux runners and failed on macOS and Windows, which are slower to
+    // start. Waiting also makes this assert something stronger — that the
+    // checker reached the running state, not just that a label exists.
+    const deadline = Date.now() + 240_000;
+    let statusbar = '';
+    while (Date.now() < deadline) {
+        statusbar = await readStatusBar(page);
+        if (/Waterproof checker \(lean4\)/i.test(statusbar)) break;
+        await page.waitForTimeout(2000);
+    }
+
+    // Collapse newlines: the Problems item is multi-line, which otherwise
+    // splits this across log lines.
+    console.log(`  Status bar: ${statusbar.replace(/\s+/g, ' ')}`);
 
     expect(statusbar,
-        'Status bar should advertise the Lean checker. If it names Rocq/coq-lsp ' +
-        'or is absent, waterproof.skipLaunchChecks did not take effect.',
+        'Status bar should advertise the Lean checker. If it is stuck on ' +
+        '"(starting...)" the Lean server never came up; if it names ' +
+        'Rocq/coq-lsp, waterproof.skipLaunchChecks did not take effect.',
     ).toMatch(/Waterproof checker \(lean4\)/i);
 });
 
