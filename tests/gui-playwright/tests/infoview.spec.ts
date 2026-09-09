@@ -1,14 +1,22 @@
 /**
- * Tier 6: Lean 4 bundle GUI smoke tests.
+ * Tier 6: Waterproof bundle GUI smoke tests.
  *
- * Verifies that the infoview webview renders proof goals and that
- * typing in the editor produces visible diagnostic feedback.
+ * Verifies that editing a proof sheet gets real feedback from the Lean server
+ * Waterproof spawns, that the goals panel renders proof state, and that
+ * nothing the bundle trimmed is missing at elaboration time.
  *
- * Uses a single VSCodium instance shared across all tests.
+ * Test order matters and these share one VSCodium instance. Waterproof's
+ * checker stays idle on a freshly opened sheet — measured here, the Problems
+ * count sat at zero and the panel read "No info found." for over a minute of
+ * idling, then responded within seconds of an edit. So the editing test runs
+ * first and doubles as the trigger that produces proof state for the test
+ * after it.
  */
 import { test, expect } from '@playwright/test';
 import { launchVSCodium, closeVSCodium, LaunchResult } from '../helpers/launch';
-import { findInfoviewFrame, waitForInfoviewText } from '../helpers/frames';
+import { findInfoviewFrame, findEditorFrame, waitForInfoviewText } from '../helpers/frames';
+import { openSheet } from '../helpers/sheet';
+import { Page } from 'playwright';
 import * as fs from 'fs';
 
 let result: LaunchResult;
@@ -24,149 +32,92 @@ test.afterAll(async () => {
     }
 });
 
-test('infoview renders goal state for a proof with sorry', async () => {
-    const page = result.page;
+/** Read the error count from VS Code's Problems status item. */
+async function problemCount(page: Page): Promise<number> {
+    const text = await page.evaluate(() => {
+        const item = document.querySelector('[id*="status.problems"]');
+        return item ? (item as HTMLElement).innerText.trim() : '';
+    }).catch(() => '');
+    const match = text.match(/(\d+)/);
+    return match ? parseInt(match[1]) : -1;
+}
 
+test('typing in an input area produces diagnostic feedback', async () => {
+    test.setTimeout(600_000);
+
+    const page = result.page;
     await page.waitForSelector('.monaco-workbench', { timeout: 30_000 });
 
-    // Open fixture_goals.lean from the explorer
-    const fileItem = page.getByRole('treeitem', { name: 'fixture_goals.lean' });
-    await fileItem.waitFor({ timeout: 10_000 });
-    await fileItem.dblclick();
+    await openSheet(page);
+    const editorFrame = await findEditorFrame(result.browser, 120_000);
 
-    await page.waitForSelector('.monaco-editor .view-lines', { timeout: 15_000 });
+    // Let the sheet settle before sampling, so the baseline reflects a quiet
+    // checker rather than a check still in flight.
+    await page.waitForTimeout(20_000);
+    const baseline = await problemCount(page);
+    console.log(`  Baseline problem count: ${baseline}`);
+    expect(baseline, 'could not read the Problems status item').toBeGreaterThanOrEqual(0);
 
-    // Wait for lean4 extension
-    const langIndicator = page.getByRole('button', { name: 'lean4' });
-    await langIndicator.waitFor({ timeout: 60_000 });
+    // Type nonsense into the first student input area — the editable block of
+    // an exercise, unlike the read-only CodeMirror cells. The bundle under
+    // test is disposable, and the edit is never saved to disk.
+    await editorFrame.locator('waterproofinput').first().click({ timeout: 30_000 });
+    await page.keyboard.type('This is not a tactic', { delay: 50 });
 
-    // Find the lean4 infoview specifically (identified by extension ID + React root)
-    const infoviewFrame = await findInfoviewFrame(result.browser, 120_000);
-
-    // Place cursor on sorry line to trigger goal display.
-    // Use the Command Palette "Go to Line" instead of Ctrl/Cmd+G, which
-    // may be remapped or blocked on some platforms (e.g. macOS Cmd+G = Find Next
-    // when find widget has focus).
-    const mod = process.platform === 'darwin' ? 'Meta' : 'Control';
-    await page.keyboard.press(`${mod}+Shift+KeyP`);
-    await page.waitForSelector('.quick-input-widget', { timeout: 10_000 });
-    await page.keyboard.type('Go to Line', { delay: 30 });
-    await page.waitForTimeout(500);
-    await page.keyboard.press('Enter');
-    await page.waitForSelector('.quick-input-widget', { timeout: 5_000 });
-    await page.keyboard.type('4');
-    await page.keyboard.press('Enter');
-
-    // Wait for the turnstile symbol — proves the infoview rendered a goal state
-    await waitForInfoviewText(infoviewFrame, '⊢', 60_000);
-
-    await page.screenshot({ path: 'test-results/infoview-goals.png' });
-
-    // Assert fixture-specific goal content:
-    // The fixture is: example (a b : Nat) : a + b = b + a := by sorry
-    // The infoview should show the conclusion from this specific proof.
-    const text = await infoviewFrame.evaluate(() =>
-        document.body?.innerText || ''
-    );
-    expect(text).toContain('a + b = b + a');
-});
-
-test('typing an error produces visible diagnostic feedback', async () => {
-    const page = result.page;
-
-    // Open fixture_edit.lean
-    const fileItem = page.getByRole('treeitem', { name: 'fixture_edit.lean' });
-    await fileItem.waitFor({ timeout: 10_000 });
-    await fileItem.dblclick();
-
-    await page.waitForSelector('.monaco-editor .view-lines', { timeout: 15_000 });
-
-    // Move to end and type a deliberate error
-    const mod = process.platform === 'darwin' ? 'Meta' : 'Control';
-    await page.keyboard.press(`${mod}+End`);
-    await page.keyboard.press('Enter');
-    await page.keyboard.type('#check Nat.nonexistent_name', { delay: 50 });
-
-    // Wait for the error/warning status bar item to show a non-zero error count.
-    // VS Code's "No Problems" button changes to show error/warning counts.
-    // We check for this specific status item, not arbitrary digits in the status bar.
-    const deadline = Date.now() + 120_000;
-    let errorCount = '';
+    const deadline = Date.now() + 300_000;
+    let current = baseline;
     while (Date.now() < deadline) {
-        // The Problems status item contains error/warning counts with codicon markers.
-        // When there are errors, the accessible name changes from "No Problems" to
-        // something like "2 Errors, 0 Warnings" or the text content includes digits
-        // next to the error codicon.
-        const problemsText = await page.evaluate(() => {
-            // Find the status bar item that shows problems/errors
-            // It contains codicon-error and codicon-warning icons
-            const items = document.querySelectorAll('[id*="status.problems"], [aria-label*="Error"], [aria-label*="Problem"]');
-            if (items.length > 0) {
-                return Array.from(items).map(e => e.textContent?.trim()).join(' ');
-            }
-            // Fallback: find the element with error codicon
-            const errorIcon = document.querySelector('.codicon-error');
-            if (errorIcon?.parentElement) {
-                return errorIcon.parentElement.textContent?.trim() || '';
-            }
-            return '';
-        });
-
-        // Check if we found a non-zero error count
-        const match = problemsText.match(/(\d+)/);
-        if (match && parseInt(match[1]) > 0) {
-            errorCount = problemsText;
-            break;
-        }
+        current = await problemCount(page);
+        if (current > baseline) break;
         await page.waitForTimeout(2000);
     }
 
     await page.screenshot({ path: 'test-results/interaction-error.png' });
-    expect(errorCount).not.toBe('');
+
+    expect(current,
+        `Typing nonsense into an input area should raise the error count above ` +
+        `the baseline of ${baseline}. If it does not, the Lean language server ` +
+        `Waterproof spawns via \`lake serve\` is not running or not reporting ` +
+        `diagnostics.`,
+    ).toBeGreaterThan(baseline);
 });
 
-// Pinned to MDD154 commit 1f32d8e.
-// f01_egalites.lean is a student exercise file from the project.
-// Update this if the project repo or CI default changes.
-test('project file activates infoview', async () => {
+test('infoview renders Lean proof state for the sheet', async () => {
+    test.setTimeout(600_000);
     const page = result.page;
 
-    // Open f01_egalites.lean via Quick Open
-    const mod = process.platform === 'darwin' ? 'Meta' : 'Control';
-    await page.keyboard.press(`${mod}+KeyP`);
-    await page.waitForSelector('.quick-input-widget', { timeout: 5_000 });
-    await page.keyboard.type('f01_egalites', { delay: 30 });
-    await page.waitForTimeout(1500);
-    await page.keyboard.press('Enter');
+    const infoviewFrame = await findInfoviewFrame(result.browser, 180_000);
 
-    await page.waitForSelector('.monaco-editor .view-lines', { timeout: 15_000 });
+    // The turnstile proves the panel rendered real Lean proof state rather
+    // than a placeholder — here the unsolved-goals report for the exercise the
+    // caret sits in, left there by the editing test above.
+    await waitForInfoviewText(infoviewFrame, '⊢', 300_000);
 
-    // The infoview should already be open from previous tests.
-    // Wait for it to show content for the project file (either goals or messages).
-    // The infoview text includes the filename when it processes a file.
-    const infoviewFrame = await findInfoviewFrame(result.browser, 30_000);
-    await waitForInfoviewText(infoviewFrame, 'f01_egalites', 120_000);
+    await page.screenshot({ path: 'test-results/infoview-goals.png' });
 
-    await page.screenshot({ path: 'test-results/project-exercise.png' });
+    const text = await infoviewFrame.evaluate(() =>
+        (document.body as HTMLElement).innerText,
+    );
+    console.log(`  Infoview:\n${text.slice(0, 400)}`);
 });
 
 test('infoview shows no missing-file errors', async () => {
-    // The infoview renders import/elaboration errors as "Messages" entries
-    // like "failed to open file '...'" or "missing data file for module ...".
+    // The infoview renders import/elaboration errors as message entries like
+    // "failed to open file '...'" or "missing data file for module ...".
     // These show up when the bundle was trimmed too aggressively — e.g.
-    // stripping .ir payloads that the LSP actually loads at elaboration
-    // time for modules registering delaborators / tactics / widgets.
+    // stripping .ir payloads that the LSP loads at elaboration time.
     //
-    // A student can't do anything to recover from this, so CI must fail
-    // loudly when the bundled .lake/ is incomplete for the project's
-    // import closure.
-    const infoviewFrame = await findInfoviewFrame(result.browser, 30_000);
-
-    // Give any lazy imports a moment to surface their errors.
+    // Read textContent, not innerText: Waterproof's infoview override CSS
+    // hides the All Messages section outright
+    // (details[data-vscode-context*=AllMessagesId]{display:none}), so an
+    // innerText scan would skip exactly the errors we care about. Verified
+    // against a real bundle: innerText showed "No info found." while
+    // textContent carried the collapsed "All Messages ( 2)" section.
+    const infoviewFrame = await findInfoviewFrame(result.browser, 60_000);
     await infoviewFrame.waitForTimeout(5_000);
 
     const text = await infoviewFrame.evaluate(() =>
-        document.body?.innerText || ''
+        document.body?.textContent || ''
     );
 
     const badPatterns = [
@@ -178,7 +129,6 @@ test('infoview shows no missing-file errors', async () => {
         .filter((m): m is string => !!m);
 
     if (hits.length > 0) {
-        // Log the surrounding infoview content so CI failures are diagnosable.
         console.log(`  Infoview text (first 2000 chars):\n${text.slice(0, 2000)}`);
     }
 

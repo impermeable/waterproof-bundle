@@ -76,7 +76,10 @@ fi
 # Start Xvfb for headless GUI testing
 XVFB_PID=""
 cleanup() {
-    pkill -f "codium" 2>/dev/null || true
+    # "[c]odium" so the pattern does not match the shell running pkill:
+    # pkill -f matches full command lines, and a bare "codium" kills this
+    # cleanup trap itself before it can stop the editor.
+    pkill -f "[c]odium" 2>/dev/null || true
     [ -n "$XVFB_PID" ] && kill "$XVFB_PID" 2>/dev/null || true
 }
 trap cleanup EXIT

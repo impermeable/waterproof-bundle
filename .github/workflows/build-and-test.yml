@@ -236,6 +236,428 @@ jobs:
           path: bundle-macos-arm64.zip
           retention-days: 7
 
+  # ---------------------------------------------------------------------------
+  # Tier 6 — GUI smoke tests against the Waterproof custom editor and the Lean
+  # goals panel. Ported from the lean4-extension versions; see
+  # tests/gui-playwright/helpers/frames.ts for how the two Waterproof webviews
+  # are told apart.
+  # ---------------------------------------------------------------------------
+  test-linux-gui:
+    runs-on: ubuntu-latest
+    needs: build-linux
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 18
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: bundle-linux-x64
+
+      # Extract to a short path. VS Code's main IPC socket lives under the
+      # user-data dir, and Unix domain socket paths are capped at 107 bytes:
+      #   <workspace>/bundle/introduction-to-proof-sheets-lean-bundle/vscodium/data/user-data/<ver>-main.sock
+      # is 118 chars, and over the limit VSCodium exits during startup having
+      # written no log at all — the only symptom is a CDP timeout.
+      - name: Extract bundle
+        run: |
+          mkdir -p /tmp/b
+          unzip -q bundle-linux.zip -d /tmp/b
+
+      - name: Find bundle root
+        id: find-root
+        run: |
+          root=$(find /tmp/b -mindepth 1 -maxdepth 1 -type d | head -1)
+          echo "BUNDLE_ROOT=$root" >> "$GITHUB_OUTPUT"
+          echo "Bundle root: $root"
+
+      - name: Install xvfb
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      # No elan install here — this runner exercises the "fresh machine,
+      # no prior Lean install" student state.  test-macos-gui covers the
+      # "elan-installed-but-no-toolchain" scenario.
+
+      - name: "Tier 6: Install Playwright test deps"
+        run: |
+          cd tests/gui-playwright
+          npm ci
+
+      - name: "Tier 6: UI automation tests (custom editor + goals)"
+        timeout-minutes: 25
+        env:
+          BUNDLE_ROOT: ${{ steps.find-root.outputs.BUNDLE_ROOT }}
+        run: |
+          cd tests/gui-playwright
+          xvfb-run --auto-servernum npx playwright test --reporter=list
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: tier6-screenshots-linux
+          path: tests/gui-playwright/test-results/
+          retention-days: 30
+
+  test-linux-arm64-gui:
+    runs-on: ubuntu-24.04-arm
+    needs: build-linux-arm64
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 18
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: bundle-linux-arm64
+
+      # Extract to a short path. VS Code's main IPC socket lives under the
+      # user-data dir, and Unix domain socket paths are capped at 107 bytes:
+      #   <workspace>/bundle/introduction-to-proof-sheets-lean-bundle/vscodium/data/user-data/<ver>-main.sock
+      # is 118 chars, and over the limit VSCodium exits during startup having
+      # written no log at all — the only symptom is a CDP timeout.
+      - name: Extract bundle
+        run: |
+          mkdir -p /tmp/b
+          unzip -q bundle-linux-arm64.zip -d /tmp/b
+
+      - name: Find bundle root
+        id: find-root
+        run: |
+          root=$(find /tmp/b -mindepth 1 -maxdepth 1 -type d | head -1)
+          echo "BUNDLE_ROOT=$root" >> "$GITHUB_OUTPUT"
+          echo "Bundle root: $root"
+
+      - name: Install xvfb
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - name: "Tier 6: Install Playwright test deps"
+        run: |
+          cd tests/gui-playwright
+          npm ci
+
+      - name: "Tier 6: UI automation tests (custom editor + goals)"
+        timeout-minutes: 25
+        env:
+          BUNDLE_ROOT: ${{ steps.find-root.outputs.BUNDLE_ROOT }}
+        run: |
+          cd tests/gui-playwright
+          xvfb-run --auto-servernum npx playwright test --reporter=list
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: tier6-screenshots-linux-arm64
+          path: tests/gui-playwright/test-results/
+          retention-days: 30
+
+  test-macos-gui:
+    runs-on: macos-latest
+    needs: build-macos-arm64
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 18
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: bundle-darwin-arm64
+
+      # Extract to a short path. VS Code's main IPC socket lives under the
+      # user-data dir, and Unix domain socket paths are capped at 107 bytes:
+      #   <workspace>/bundle/introduction-to-proof-sheets-lean-bundle/vscodium/data/user-data/<ver>-main.sock
+      # is 118 chars, and over the limit VSCodium exits during startup having
+      # written no log at all — the only symptom is a CDP timeout.
+      - name: Extract bundle
+        run: |
+          mkdir -p /tmp/b
+          python -c "
+          import sys, zipfile; sys.path.insert(0, '.')
+          from download import _safe_extract_zip
+          from pathlib import Path
+          with zipfile.ZipFile('bundle-macos-arm64.zip') as zf:
+              _safe_extract_zip(zf, Path('/tmp/b'))
+          "
+
+      - name: Find bundle root
+        id: find-root
+        run: |
+          root=$(find /tmp/b -mindepth 1 -maxdepth 1 -type d | head -1)
+          echo "BUNDLE_ROOT=$root" >> "$GITHUB_OUTPUT"
+          echo "Bundle root: $root"
+
+      # The launcher strips quarantine; replicate here since GUI tests
+      # launch VSCodium directly without running the launcher script.
+      - name: "Clear quarantine (as launcher would)"
+        run: |
+          root="${{ steps.find-root.outputs.BUNDLE_ROOT }}"
+          xattr -dr com.apple.quarantine "$root" 2>/dev/null || true
+
+      # Install elan but no toolchain.  Mimics the most common student
+      # state: a prior Lean course left ~/.elan/bin/elan on PATH with no
+      # toolchain matching this project's lean-toolchain pin.  Waterproof
+      # spawns `lake serve` itself, so this exercises the launcher's PATH
+      # scrubbing and the ~/.elan/toolchains/ registration rather than the
+      # lean4 extension's elan probe.
+      - name: "Install elan (no toolchain) to simulate fresh student"
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/v4.2.1/elan-init.sh \
+            | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> $GITHUB_PATH
+          "$HOME/.elan/bin/elan" --version
+          "$HOME/.elan/bin/elan" toolchain list || true
+
+      - name: "Tier 6: Install Playwright test deps"
+        run: |
+          cd tests/gui-playwright
+          npm ci
+
+      - name: "Tier 6: UI automation tests (custom editor + goals)"
+        timeout-minutes: 25
+        env:
+          BUNDLE_ROOT: ${{ steps.find-root.outputs.BUNDLE_ROOT }}
+        run: |
+          cd tests/gui-playwright
+          npx playwright test --reporter=list
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: tier6-screenshots-macos
+          path: tests/gui-playwright/test-results/
+          retention-days: 30
+
+  test-macos-gui-fresh:
+    # Same as test-macos-gui but with no elan installed.  Covers the
+    # "fresh Mac, no prior Lean install" student state.
+    runs-on: macos-latest
+    needs: build-macos-arm64
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 18
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: bundle-darwin-arm64
+
+      # Extract to a short path. VS Code's main IPC socket lives under the
+      # user-data dir, and Unix domain socket paths are capped at 107 bytes:
+      #   <workspace>/bundle/introduction-to-proof-sheets-lean-bundle/vscodium/data/user-data/<ver>-main.sock
+      # is 118 chars, and over the limit VSCodium exits during startup having
+      # written no log at all — the only symptom is a CDP timeout.
+      - name: Extract bundle
+        run: |
+          mkdir -p /tmp/b
+          python -c "
+          import sys, zipfile; sys.path.insert(0, '.')
+          from download import _safe_extract_zip
+          from pathlib import Path
+          with zipfile.ZipFile('bundle-macos-arm64.zip') as zf:
+              _safe_extract_zip(zf, Path('/tmp/b'))
+          "
+
+      - name: Find bundle root
+        id: find-root
+        run: |
+          root=$(find /tmp/b -mindepth 1 -maxdepth 1 -type d | head -1)
+          echo "BUNDLE_ROOT=$root" >> "$GITHUB_OUTPUT"
+          echo "Bundle root: $root"
+
+      - name: "Clear quarantine (as launcher would)"
+        run: |
+          root="${{ steps.find-root.outputs.BUNDLE_ROOT }}"
+          xattr -dr com.apple.quarantine "$root" 2>/dev/null || true
+
+      # Guard against a runner image change silently turning this into a
+      # duplicate of test-macos-gui.
+      - name: "Sanity: no inherited elan"
+        run: |
+          if [ -e "$HOME/.elan" ]; then
+            echo "::error::Runner unexpectedly has ~/.elan — this job needs a clean slate"
+            ls -la "$HOME/.elan"
+            exit 1
+          fi
+
+      - name: "Tier 6: Install Playwright test deps"
+        run: |
+          cd tests/gui-playwright
+          npm ci
+
+      - name: "Tier 6: UI automation tests (custom editor + goals)"
+        timeout-minutes: 25
+        env:
+          BUNDLE_ROOT: ${{ steps.find-root.outputs.BUNDLE_ROOT }}
+        run: |
+          cd tests/gui-playwright
+          npx playwright test --reporter=list
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: tier6-screenshots-macos-fresh
+          path: tests/gui-playwright/test-results/
+          retention-days: 30
+
+  test-windows-gui:
+    runs-on: windows-latest
+    needs: build-windows
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 18
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: bundle-windows
+
+      # Short destination here too: Windows uses named pipes rather than
+      # Unix sockets, but the long bundle directory name plus the deep .lake
+      # tree gets close to MAX_PATH under the workspace directory.
+      - name: Extract bundle
+        run: Expand-Archive -Path bundle.zip -DestinationPath C:\b
+
+      - name: Find bundle root
+        id: find-root
+        shell: pwsh
+        run: |
+          $root = Get-ChildItem -Path C:\b -Directory | Select-Object -First 1
+          echo "BUNDLE_ROOT=$($root.FullName)" >> $env:GITHUB_OUTPUT
+          echo "Bundle root: $($root.FullName)"
+
+      # No elan install here — covers the no-prior-Lean Windows student
+      # state.  test-macos-gui exercises the elan-without-toolchain path.
+
+      - name: "Tier 6: Install Playwright test deps"
+        shell: pwsh
+        run: |
+          cd tests/gui-playwright
+          npm ci
+
+      - name: "Tier 6: UI automation tests (custom editor + goals)"
+        timeout-minutes: 25
+        shell: pwsh
+        env:
+          BUNDLE_ROOT: ${{ steps.find-root.outputs.BUNDLE_ROOT }}
+        run: |
+          cd tests/gui-playwright
+          npx playwright test --reporter=list
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: tier6-screenshots-windows
+          path: tests/gui-playwright/test-results/
+          retention-days: 30
+
+  deploy-screenshots:
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    needs: [test-linux-gui, test-linux-arm64-gui, test-macos-gui, test-windows-gui]
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: true
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        continue-on-error: true
+        with:
+          name: tier6-screenshots-linux
+          path: site/linux
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        continue-on-error: true
+        with:
+          name: tier6-screenshots-linux-arm64
+          path: site/linux-arm64
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        continue-on-error: true
+        with:
+          name: tier6-screenshots-macos
+          path: site/macos
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        continue-on-error: true
+        with:
+          name: tier6-screenshots-windows
+          path: site/windows
+
+      - name: Create index page
+        run: |
+          cat > site/index.html << 'INDEXEOF'
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <title>Lean 4 Bundle - GUI Test Screenshots</title>
+            <style>
+              body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; }
+              h1 { border-bottom: 1px solid #ddd; padding-bottom: 10px; }
+              .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+              .grid figure { margin: 0; text-align: center; }
+              .grid img { width: 100%; border: 1px solid #ccc; border-radius: 4px; }
+              .grid figcaption { margin-top: 6px; font-size: 0.9em; color: #555; }
+              .col-header { font-weight: bold; text-align: center; padding-bottom: 4px; border-bottom: 2px solid #888; }
+            </style>
+          </head>
+          <body>
+            <h1>Lean 4 Bundle - GUI Test Screenshots</h1>
+            <p>Latest screenshots from Tier 6 Playwright GUI tests on <code>main</code>. Click any thumbnail for the full-size image.</p>
+            <div class="grid">
+              <div class="col-header">Linux x64</div>
+              <div class="col-header">Linux arm64</div>
+              <div class="col-header">macOS</div>
+              <div class="col-header">Windows</div>
+              <figure><a href="linux/infoview-goals.png"><img src="linux/infoview-goals.png" alt="Linux x64 infoview goals"></a><figcaption>Infoview goals</figcaption></figure>
+              <figure><a href="linux-arm64/infoview-goals.png"><img src="linux-arm64/infoview-goals.png" alt="Linux arm64 infoview goals"></a><figcaption>Infoview goals</figcaption></figure>
+              <figure><a href="macos/infoview-goals.png"><img src="macos/infoview-goals.png" alt="macOS infoview goals"></a><figcaption>Infoview goals</figcaption></figure>
+              <figure><a href="windows/infoview-goals.png"><img src="windows/infoview-goals.png" alt="Windows infoview goals"></a><figcaption>Infoview goals</figcaption></figure>
+              <figure><a href="linux/interaction-error.png"><img src="linux/interaction-error.png" alt="Linux x64 diagnostics"></a><figcaption>Live diagnostics</figcaption></figure>
+              <figure><a href="linux-arm64/interaction-error.png"><img src="linux-arm64/interaction-error.png" alt="Linux arm64 diagnostics"></a><figcaption>Live diagnostics</figcaption></figure>
+              <figure><a href="macos/interaction-error.png"><img src="macos/interaction-error.png" alt="macOS diagnostics"></a><figcaption>Live diagnostics</figcaption></figure>
+              <figure><a href="windows/interaction-error.png"><img src="windows/interaction-error.png" alt="Windows diagnostics"></a><figcaption>Live diagnostics</figcaption></figure>
+              <figure><a href="linux/project-exercise.png"><img src="linux/project-exercise.png" alt="Linux x64 project"></a><figcaption>Project exercise</figcaption></figure>
+              <figure><a href="linux-arm64/project-exercise.png"><img src="linux-arm64/project-exercise.png" alt="Linux arm64 project"></a><figcaption>Project exercise</figcaption></figure>
+              <figure><a href="macos/project-exercise.png"><img src="macos/project-exercise.png" alt="macOS project"></a><figcaption>Project exercise</figcaption></figure>
+              <figure><a href="windows/project-exercise.png"><img src="windows/project-exercise.png" alt="Windows project"></a><figcaption>Project exercise</figcaption></figure>
+            </div>
+          </body>
+          </html>
+          INDEXEOF
+
+      - name: Verify screenshots exist
+        run: |
+          for platform in linux linux-arm64 macos windows; do
+            for f in infoview-goals.png interaction-error.png project-exercise.png; do
+              test -f "site/$platform/$f" || { echo "::warning::Missing screenshot: $platform/$f"; }
+            done
+          done
+
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+
   ci:
     if: always()
     runs-on: ubuntu-latest
@@ -245,6 +667,11 @@ jobs:
       - build-linux
       - build-linux-arm64
       - build-macos-arm64
+      - test-linux-gui
+      - test-linux-arm64-gui
+      - test-macos-gui
+      - test-macos-gui-fresh
+      - test-windows-gui
     steps:
       - name: Check all jobs passed
         if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')

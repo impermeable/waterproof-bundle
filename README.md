@@ -11,14 +11,11 @@ needed.
 CI runs Playwright GUI smoke tests on all supported platforms and publishes
 screenshots to [GitHub Pages](https://leanprover-community.github.io/bundle/).
 
-> **Temporarily disabled.** The GUI and offline test tiers were removed from
-> CI when the build matrix switched to the Waterproof proof-sheet bundle: they
-> target the lean4 extension (`extensionId=leanprover.lean4`), which a
-> Waterproof bundle does not contain. CI still runs Tier 1 structural
-> verification (`tests/verify_bundle.py --waterproof`) on every build. The
-> screenshots below are from the last MDD154 run and are not being refreshed.
-> To restore the tiers, port them to Waterproof's custom editor
-> (`waterproofTue.waterproofEditor`) and extension ID.
+The GUI tests were ported to Waterproof along with the build matrix: they
+drive the custom editor (`waterproofTue.waterproofEditor`) and the Lean goals
+panel rather than the lean4 extension. Tier 1 structural verification
+(`tests/verify_bundle.py --waterproof`) runs on every build. The offline tier
+(`tests/test_offline.py` under network isolation) is still disabled.
 
 <table>
 <tr><th></th><th>Linux x64</th><th>Linux arm64</th><th>macOS</th><th>Windows</th></tr>
