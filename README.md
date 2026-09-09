@@ -11,6 +11,15 @@ needed.
 CI runs Playwright GUI smoke tests on all supported platforms and publishes
 screenshots to [GitHub Pages](https://leanprover-community.github.io/bundle/).
 
+> **Temporarily disabled.** The GUI and offline test tiers were removed from
+> CI when the build matrix switched to the Waterproof proof-sheet bundle: they
+> target the lean4 extension (`extensionId=leanprover.lean4`), which a
+> Waterproof bundle does not contain. CI still runs Tier 1 structural
+> verification (`tests/verify_bundle.py --waterproof`) on every build. The
+> screenshots below are from the last MDD154 run and are not being refreshed.
+> To restore the tiers, port them to Waterproof's custom editor
+> (`waterproofTue.waterproofEditor`) and extension ID.
+
 <table>
 <tr><th></th><th>Linux x64</th><th>Linux arm64</th><th>macOS</th><th>Windows</th></tr>
 <tr>
@@ -130,7 +139,7 @@ python3 bundle.py https://github.com/impermeable/introduction-to-proof-sheets-le
 **Pinned Linux x86-64:**
 
 ```bash
-python3 bundle.py https://github.com/impermeable/introduction-to-proof-sheets-lean --ref e62b9166113d3f48b82a09bd5e728fbd779608cc --platform linux-x64 --vscodium-version 1.126.04524 --waterproof-version 0.12.0 --allow-unsolved --work-dir ../tmp/bewijzen-waterproof-linux-x64 --clean-work-dir --output ../bewijzen-waterproof-linux-x64.zip --open-file "Bewijzen/Lecture1/sheet1/_conjunction.lean"
+python3 bundle.py https://github.com/impermeable/introduction-to-proof-sheets-lean --ref e62b9166113d3f48b82a09bd5e728fbd779608cc --platform linux-x64 --vscodium-version 1.126.04524 --waterproof-version 0.12.0 --allow-unsolved --work-dir ../tmp/bewijzen-waterproof-linux-x64 --clean-work-dir --output ../bewijzen-waterproof-linux-x64.zip --open-file "Bewijzen/Lecture1/sheet1_conjunction.lean"
 ```
 
 The latest commands intentionally omit all three pins: they use the repository's
@@ -146,7 +155,7 @@ python3 bundle.py https://github.com/impermeable/introduction-to-proof-sheets-le
 **Latest Linux x86-64:**
 
 ```bash
-python3 bundle.py https://github.com/impermeable/introduction-to-proof-sheets-lean --platform linux-x64 --waterproof --allow-unsolved --work-dir ../tmp/bewijzen-waterproof-linux-x64-latest --clean-work-dir --output ../bewijzen-waterproof-linux-x64-latest.zip --open-file "Bewijzen/Lecture1/sheet1/_conjunction.lean"
+python3 bundle.py https://github.com/impermeable/introduction-to-proof-sheets-lean --platform linux-x64 --waterproof --allow-unsolved --work-dir ../tmp/bewijzen-waterproof-linux-x64-latest --clean-work-dir --output ../bewijzen-waterproof-linux-x64-latest.zip --open-file "Bewijzen/Lecture1/sheet1_conjunction.lean"
 ```
 
 For ARM64 Linux, replace `linux-x64` with `linux-arm64` and adjust the output
@@ -299,6 +308,13 @@ Run the local Linux x86-64 test harness against an existing bundle:
 ./test.sh /path/to/MDD154-bundle
 ```
 
+For a bundle built with `--waterproof`, pass the flag through so the
+structural checks expect the Waterproof extension rather than lean4:
+
+```bash
+./test.sh /path/to/introduction-to-proof-sheets-lean-bundle --waterproof
+```
+
 This runs the core unit tests, bundle structure verification, launcher tests, and
 Playwright GUI tests (requires Xvfb). Build a bundle first with:
 
@@ -358,7 +374,6 @@ Several component versions are hardcoded and need periodic bumps:
 | --------------------------------------------- | -------------------------------------- | ----------------------------------- |
 | git shim version string                       | `shim/git_shim.c` (`VERSION_LINE`)     | Must be >= 2.0.0, not 2.25.x/2.26.x |
 | even-better-toml extension                    | `download.py` `LEAN4_EXTENSION_DEPS`   | ID + version                        |
-| elan installer                                | `.github/workflows/build-and-test.yml` | Tag in curl URL                     |
 | GitHub Actions (checkout, setup-python, etc.) | `.github/workflows/build-and-test.yml` | Pinned by commit SHA                |
 
 The **Lean toolchain** version comes from the target project's

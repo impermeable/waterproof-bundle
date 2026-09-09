@@ -8,7 +8,28 @@ on:
       repo_url:
         description: 'Project repository URL'
         required: false
-        default: 'https://github.com/PatrickMassot/MDD154'
+        default: 'https://github.com/impermeable/introduction-to-proof-sheets-lean'
+      repo_ref:
+        description: 'Git ref (commit/branch/tag) of the project'
+        required: false
+        default: '7389f0184dd34d587d1063aae70440ebfc6d3a8d'
+      waterproof_version:
+        description: 'Waterproof extension version from Open VSX'
+        required: false
+        default: '0.12.2'
+
+# The build matrix targets the Waterproof proof-sheet bundle described in
+# README.md ("Proof-sheet bundle commands").  REPO_REF is pinned so a push
+# to the course repo cannot change what CI builds; bump it deliberately.
+env:
+  REPO_URL: ${{ github.event.inputs.repo_url || 'https://github.com/impermeable/introduction-to-proof-sheets-lean' }}
+  REPO_REF: ${{ github.event.inputs.repo_ref || '7389f0184dd34d587d1063aae70440ebfc6d3a8d' }}
+  WATERPROOF_VERSION: ${{ github.event.inputs.waterproof_version || '0.12.2' }}
+  # Note the flat filename: the path in README.md's example command
+  # (Bewijzen/Lecture1/sheet1/_conjunction.lean) does not exist in the repo.
+  # --open-file is not validated by the bundler, so a wrong path silently
+  # opens nothing.
+  OPEN_FILE: 'Bewijzen/Lecture1/sheet1_conjunction.lean'
 
 jobs:
   unit-tests:
@@ -23,66 +44,50 @@ jobs:
       - name: Run unit tests
         run: pytest tests/ -v
 
-  build-project:
-    runs-on: ubuntu-latest
-    needs: unit-tests
-    env:
-      REPO_URL: ${{ github.event.inputs.repo_url || 'https://github.com/PatrickMassot/MDD154' }}
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - name: Install elan
-        run: |
-          curl -sSf https://raw.githubusercontent.com/leanprover/elan/v4.2.1/elan-init.sh | sh -s -- -y --default-toolchain none
-          echo "$HOME/.elan/bin" >> $GITHUB_PATH
-
-      - name: Clone and build project
-        # Tier 6 GUI tests assert on specific file content (f01_egalites.lean line 44).
-        # Pin the default project to a known commit so upstream changes don't break tests.
-        run: |
-          git clone "$REPO_URL" /tmp/project
-          cd /tmp/project
-          git checkout 1f32d8e95f5567c9aabcd55297840bda340ad913 2>/dev/null || true
-          lake exe cache get || true
-          lake build
-
-      - name: Archive built project
-        run: tar cf /tmp/project.tar -C /tmp project
-
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: built-project
-          path: /tmp/project.tar
-          retention-days: 1
+  # No elan/Lean install on any build runner: bundle.py clones the project
+  # itself and builds it with the version-matched Lake it downloads
+  # (see build_project in bundle.py).
+  #
+  # --allow-unsolved is required: the proof sheets are exercises with
+  # unsolved goals, so `lake build` is expected to fail.  Dependencies used
+  # by the exercises are still materialized before the failure is tolerated.
 
   build-windows:
     runs-on: windows-latest
     needs: unit-tests
-    env:
-      REPO_URL: ${{ github.event.inputs.repo_url || 'https://github.com/PatrickMassot/MDD154' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
 
-      - name: Clone project
-        shell: bash
-        # Tier 6 GUI tests assert on specific file content (f01_egalites.lean line 44).
-        # Pin the default project to a known commit so upstream changes don't break tests.
-        run: |
-          git clone "$REPO_URL" target-project
-          cd target-project
-          git checkout 1f32d8e95f5567c9aabcd55297840bda340ad913 2>/dev/null || true
-
-      - name: Build Windows bundle natively
+      # --open-file is deliberately omitted here: combining it with
+      # --waterproof on Windows is rejected by the bundler (see "Known
+      # issues" in README.md -- VS Code opens a cold-start file argument in
+      # its text editor instead of the Waterproof custom editor).
+      - name: Build Windows Waterproof bundle natively
         shell: bash
         run: |
           python bundle.py "$REPO_URL" \
-            --project-dir target-project \
+            --ref "$REPO_REF" \
             --platform windows \
+            --waterproof-version "$WATERPROOF_VERSION" \
+            --allow-unsolved \
             --work-dir bundle-work \
             --output bundle.zip
+      # Tier 1 runs against the assembled directory rather than the zip:
+      # the GUI/offline tiers that used to unpack the artifact are gone
+      # (see README.md), and structural layout is identical either way.
+      - name: "Tier 1: Verify bundle structure"
+        shell: bash
+        run: |
+          root=$(find bundle-work -mindepth 1 -maxdepth 1 -type d -name '*-bundle' | head -1)
+          if [ -z "$root" ]; then
+            echo "::error::No assembled *-bundle directory under bundle-work"
+            exit 1
+          fi
+          python tests/verify_bundle.py "$root" --platform windows --waterproof
+
 
       - name: Report bundle size
         shell: bash
@@ -98,34 +103,36 @@ jobs:
 
   build-linux:
     runs-on: ubuntu-latest
-    needs: build-project
-    env:
-      REPO_URL: ${{ github.event.inputs.repo_url || 'https://github.com/PatrickMassot/MDD154' }}
+    needs: unit-tests
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: built-project
-
-      - name: Extract project
-        run: tar xf project.tar -C /tmp
-
-      - name: Install elan
-        run: |
-          curl -sSf https://raw.githubusercontent.com/leanprover/elan/v4.2.1/elan-init.sh | sh -s -- -y --default-toolchain none
-          echo "$HOME/.elan/bin" >> $GITHUB_PATH
-
-      - name: Build Linux bundle
+      - name: Build Linux x64 Waterproof bundle
         run: |
           python bundle.py "$REPO_URL" \
-            --project-dir /tmp/project \
+            --ref "$REPO_REF" \
             --platform linux-x64 \
+            --waterproof-version "$WATERPROOF_VERSION" \
+            --allow-unsolved \
+            --open-file "$OPEN_FILE" \
             --work-dir /tmp/bundle-work \
             --output /tmp/bundle-linux.zip
+      # Tier 1 runs against the assembled directory rather than the zip:
+      # the GUI/offline tiers that used to unpack the artifact are gone
+      # (see README.md), and structural layout is identical either way.
+      - name: "Tier 1: Verify bundle structure"
+        shell: bash
+        run: |
+          root=$(find /tmp/bundle-work -mindepth 1 -maxdepth 1 -type d -name '*-bundle' | head -1)
+          if [ -z "$root" ]; then
+            echo "::error::No assembled *-bundle directory under /tmp/bundle-work"
+            exit 1
+          fi
+          python tests/verify_bundle.py "$root" --platform linux-x64 --waterproof
+
 
       - name: Report bundle size
         run: |
@@ -141,43 +148,35 @@ jobs:
   build-linux-arm64:
     runs-on: ubuntu-24.04-arm
     needs: unit-tests
-    env:
-      REPO_URL: ${{ github.event.inputs.repo_url || 'https://github.com/PatrickMassot/MDD154' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
 
-      - name: Install elan
-        run: |
-          curl -sSf https://raw.githubusercontent.com/leanprover/elan/v4.2.1/elan-init.sh | sh -s -- -y --default-toolchain none
-          echo "$HOME/.elan/bin" >> $GITHUB_PATH
-
-      # Clone and build the project natively on the arm64 runner.
-      # Unlike the other platforms (which reuse the x64-built artifact
-      # because oleans are arch-agnostic and the target toolchain is
-      # cross-compiled), arm64 runs the bundle's own lake at the end of
-      # assemble_bundle. Any stale x64 native artifacts (`ir/`, shared libs,
-      # binaries) from the shared artifact would be picked up by trace
-      # validation. Building fresh on arm64 sidesteps that class of bugs.
-      - name: Clone and build project
-        # Tier 6 GUI tests assert on specific file content (f01_egalites.lean line 44).
-        # Pin the default project to a known commit so upstream changes don't break tests.
-        run: |
-          git clone "$REPO_URL" /tmp/project
-          cd /tmp/project
-          git checkout 1f32d8e95f5567c9aabcd55297840bda340ad913 2>/dev/null || true
-          lake exe cache get || true
-          lake build
-
-      - name: Build Linux arm64 bundle
+      - name: Build Linux arm64 Waterproof bundle
         run: |
           python bundle.py "$REPO_URL" \
-            --project-dir /tmp/project \
+            --ref "$REPO_REF" \
             --platform linux-arm64 \
+            --waterproof-version "$WATERPROOF_VERSION" \
+            --allow-unsolved \
+            --open-file "$OPEN_FILE" \
             --work-dir /tmp/bundle-work \
             --output /tmp/bundle-linux-arm64.zip
+      # Tier 1 runs against the assembled directory rather than the zip:
+      # the GUI/offline tiers that used to unpack the artifact are gone
+      # (see README.md), and structural layout is identical either way.
+      - name: "Tier 1: Verify bundle structure"
+        shell: bash
+        run: |
+          root=$(find /tmp/bundle-work -mindepth 1 -maxdepth 1 -type d -name '*-bundle' | head -1)
+          if [ -z "$root" ]; then
+            echo "::error::No assembled *-bundle directory under /tmp/bundle-work"
+            exit 1
+          fi
+          python tests/verify_bundle.py "$root" --platform linux-arm64 --waterproof
+
 
       - name: Report bundle size
         run: |
@@ -193,32 +192,38 @@ jobs:
   build-macos-arm64:
     runs-on: macos-14
     needs: unit-tests
-    env:
-      REPO_URL: ${{ github.event.inputs.repo_url || 'https://github.com/PatrickMassot/MDD154' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
 
-      - name: Clone project
-        # Tier 6 GUI tests assert on specific file content (f01_egalites.lean line 44).
-        # Pin the default project to a known commit so upstream changes don't break tests.
-        run: |
-          git clone "$REPO_URL" target-project
-          cd target-project
-          git checkout 1f32d8e95f5567c9aabcd55297840bda340ad913 2>/dev/null || true
-
       - name: Ensure zstd is available
         run: command -v zstd >/dev/null || brew install zstd
 
-      - name: Build macOS arm64 bundle natively
+      - name: Build macOS arm64 Waterproof bundle natively
         run: |
           python bundle.py "$REPO_URL" \
-            --project-dir target-project \
+            --ref "$REPO_REF" \
             --platform darwin-arm64 \
+            --waterproof-version "$WATERPROOF_VERSION" \
+            --allow-unsolved \
+            --open-file "$OPEN_FILE" \
             --work-dir bundle-work \
             --output bundle-macos-arm64.zip
+      # Tier 1 runs against the assembled directory rather than the zip:
+      # the GUI/offline tiers that used to unpack the artifact are gone
+      # (see README.md), and structural layout is identical either way.
+      - name: "Tier 1: Verify bundle structure"
+        shell: bash
+        run: |
+          root=$(find bundle-work -mindepth 1 -maxdepth 1 -type d -name '*-bundle' | head -1)
+          if [ -z "$root" ]; then
+            echo "::error::No assembled *-bundle directory under bundle-work"
+            exit 1
+          fi
+          python tests/verify_bundle.py "$root" --platform darwin-arm64 --waterproof
+
 
       - name: Report bundle size
         run: |
@@ -231,867 +236,15 @@ jobs:
           path: bundle-macos-arm64.zip
           retention-days: 7
 
-  test-linux-offline:
-    runs-on: ubuntu-latest
-    needs: build-linux
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: '3.12'
-
-      - name: "Preflight: verify network isolation works"
-        run: |
-          if unshare -rn -- true 2>/dev/null; then
-            echo "Using: unshare -rn"
-          elif sudo -n unshare --net -- true 2>/dev/null; then
-            echo "Using: sudo unshare --net"
-          else
-            echo "::error::Neither 'unshare -rn' nor 'sudo unshare --net' works"
-            exit 1
-          fi
-
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: bundle-linux-x64
-
-      - name: Extract bundle
-        run: |
-          mkdir bundle
-          cd bundle
-          unzip ../bundle-linux.zip
-
-      - name: Find bundle root
-        id: find-root
-        run: |
-          root=$(find bundle -mindepth 1 -maxdepth 1 -type d | head -1)
-          echo "BUNDLE_ROOT=$(pwd)/$root" >> "$GITHUB_OUTPUT"
-          echo "Bundle root: $(pwd)/$root"
-          ls "$(pwd)/$root"
-
-      # Olean timestamps are now preserved by create_zip (4-second advance).
-
-      # --- Tier 1: Structural integrity ---
-      - name: "Tier 1: Verify bundle structure"
-        run: |
-          python tests/verify_bundle.py "${{ steps.find-root.outputs.BUNDLE_ROOT }}" --platform linux-x64
-
-      # --- Tier 2+3 offline: lake and LSP with network disabled ---
-      - name: Install pytest
-        run: pip install pytest
-
-      - name: "Offline: Run offline guarantee tests"
-        timeout-minutes: 5
-        env:
-          BUNDLE_ROOT: ${{ steps.find-root.outputs.BUNDLE_ROOT }}
-        run: |
-          python -m pytest tests/test_offline.py -v
-
-  test-linux-gui:
-    runs-on: ubuntu-latest
-    needs: build-linux
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 18
-
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: bundle-linux-x64
-
-      - name: Extract bundle
-        run: |
-          mkdir bundle
-          cd bundle
-          unzip ../bundle-linux.zip
-
-      - name: Find bundle root
-        id: find-root
-        run: |
-          root=$(find bundle -mindepth 1 -maxdepth 1 -type d | head -1)
-          echo "BUNDLE_ROOT=$(pwd)/$root" >> "$GITHUB_OUTPUT"
-          echo "Bundle root: $(pwd)/$root"
-
-      # Olean timestamps are now preserved by create_zip (4-second advance).
-
-      - name: Install xvfb
-        run: sudo apt-get update && sudo apt-get install -y xvfb
-
-      # No elan install here — this runner exercises the "fresh machine,
-      # no prior Lean install" student state.  test-macos-gui covers the
-      # "elan-installed-but-no-toolchain" scenario.
-
-      - name: "Tier 6: Install Playwright test deps"
-        run: |
-          cd tests/gui-playwright
-          npm ci
-
-      - name: "Tier 6: UI automation tests (infoview + interaction)"
-        timeout-minutes: 15
-        env:
-          BUNDLE_ROOT: ${{ steps.find-root.outputs.BUNDLE_ROOT }}
-        run: |
-          cd tests/gui-playwright
-          xvfb-run --auto-servernum npx playwright test --reporter=list
-
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
-        with:
-          name: tier6-screenshots-linux
-          path: tests/gui-playwright/test-results/
-          retention-days: 30
-
-  test-linux-arm64-offline:
-    runs-on: ubuntu-24.04-arm
-    needs: build-linux-arm64
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: '3.12'
-
-      - name: "Preflight: verify network isolation works"
-        run: |
-          if unshare -rn -- true 2>/dev/null; then
-            echo "Using: unshare -rn"
-          elif sudo -n unshare --net -- true 2>/dev/null; then
-            echo "Using: sudo unshare --net"
-          else
-            echo "::error::Neither 'unshare -rn' nor 'sudo unshare --net' works"
-            exit 1
-          fi
-
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: bundle-linux-arm64
-
-      - name: Extract bundle
-        run: |
-          mkdir bundle
-          cd bundle
-          unzip ../bundle-linux-arm64.zip
-
-      - name: Find bundle root
-        id: find-root
-        run: |
-          root=$(find bundle -mindepth 1 -maxdepth 1 -type d | head -1)
-          echo "BUNDLE_ROOT=$(pwd)/$root" >> "$GITHUB_OUTPUT"
-          echo "Bundle root: $(pwd)/$root"
-          ls "$(pwd)/$root"
-
-      # Olean timestamps are now preserved by create_zip (4-second advance).
-
-      # --- Tier 1: Structural integrity ---
-      - name: "Tier 1: Verify bundle structure"
-        run: |
-          python tests/verify_bundle.py "${{ steps.find-root.outputs.BUNDLE_ROOT }}" --platform linux-arm64
-
-      # --- Tier 2+3 offline: lake and LSP with network disabled ---
-      - name: Install pytest
-        run: pip install pytest
-
-      - name: "Offline: Run offline guarantee tests"
-        timeout-minutes: 5
-        env:
-          BUNDLE_ROOT: ${{ steps.find-root.outputs.BUNDLE_ROOT }}
-        run: |
-          python -m pytest tests/test_offline.py -v
-
-  test-linux-arm64-gui:
-    runs-on: ubuntu-24.04-arm
-    needs: build-linux-arm64
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 18
-
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: bundle-linux-arm64
-
-      - name: Extract bundle
-        run: |
-          mkdir bundle
-          cd bundle
-          unzip ../bundle-linux-arm64.zip
-
-      - name: Find bundle root
-        id: find-root
-        run: |
-          root=$(find bundle -mindepth 1 -maxdepth 1 -type d | head -1)
-          echo "BUNDLE_ROOT=$(pwd)/$root" >> "$GITHUB_OUTPUT"
-          echo "Bundle root: $(pwd)/$root"
-
-      # Olean timestamps are now preserved by create_zip (4-second advance).
-
-      - name: Install xvfb
-        run: sudo apt-get update && sudo apt-get install -y xvfb
-
-      # No elan install here — covers the no-prior-Lean student state.
-
-      - name: "Tier 6: Install Playwright test deps"
-        run: |
-          cd tests/gui-playwright
-          npm ci
-
-      - name: "Tier 6: UI automation tests (infoview + interaction)"
-        timeout-minutes: 15
-        env:
-          BUNDLE_ROOT: ${{ steps.find-root.outputs.BUNDLE_ROOT }}
-        run: |
-          cd tests/gui-playwright
-          xvfb-run --auto-servernum npx playwright test --reporter=list
-
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
-        with:
-          name: tier6-screenshots-linux-arm64
-          path: tests/gui-playwright/test-results/
-          retention-days: 30
-
-  test-windows:
-    runs-on: windows-latest
-    needs: build-windows
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: '3.12'
-
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: bundle-windows
-
-      - name: Extract bundle
-        run: Expand-Archive -Path bundle.zip -DestinationPath bundle
-
-      - name: Find bundle root
-        id: find-root
-        shell: pwsh
-        run: |
-          $root = Get-ChildItem -Path bundle -Directory | Select-Object -First 1
-          echo "BUNDLE_ROOT=$($root.FullName)" >> $env:GITHUB_OUTPUT
-          echo "Bundle root: $($root.FullName)"
-          Get-ChildItem $root.FullName
-
-      # Olean timestamps are now preserved by create_zip (4-second advance).
-
-      # --- Tier 1: Structural integrity ---
-      - name: "Tier 1: Verify bundle structure"
-        shell: pwsh
-        run: |
-          python tests/verify_bundle.py "${{ steps.find-root.outputs.BUNDLE_ROOT }}" --platform windows
-
-      # --- Existing: lean binary test ---
-      - name: Test lean binary
-        shell: pwsh
-        run: |
-          $root = "${{ steps.find-root.outputs.BUNDLE_ROOT }}"
-          $env:PATH = "$root\lean\bin;$env:PATH"
-          lean --version
-
-      - name: Build LEAN_PATH
-        id: lean-path
-        shell: pwsh
-        run: |
-          $root = "${{ steps.find-root.outputs.BUNDLE_ROOT }}"
-          $leanPath = "$root\lean\lib\lean;$root\project\.lake\build\lib\lean"
-          Get-ChildItem "$root\project\.lake\packages" -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-            $buildDir = Join-Path $_.FullName ".lake\build\lib\lean"
-            if (Test-Path $buildDir) {
-              $leanPath += ";$buildDir"
-            }
-          }
-          echo "LEAN_PATH=$leanPath" >> $env:GITHUB_OUTPUT
-
-      # --- Tier 2: lake build --no-build ---
-      # Manifest is rewritten to path deps so lake doesn't need git.
-      - name: "Tier 2: lake build --no-build"
-        shell: pwsh
-        run: |
-          $root = "${{ steps.find-root.outputs.BUNDLE_ROOT }}"
-          $env:PATH = "$root\lean\bin;$env:PATH"
-          $env:LEAN_PATH = "${{ steps.lean-path.outputs.LEAN_PATH }}"
-          $env:ELAN_HOME = "$root\lean"
-          cd "$root\project"
-          $ErrorActionPreference = 'Continue'
-          lake build --no-build 2>&1 | Select-Object -First 50
-          # Exit 3 = targets stale but not rebuilding (expected after zip/unzip)
-          if ($LASTEXITCODE -notin 0,3) { exit $LASTEXITCODE }
-
-      # --- Tier 3: LSP protocol test ---
-      - name: "Tier 3: LSP protocol test"
-        shell: pwsh
-        timeout-minutes: 3
-        run: |
-          $root = "${{ steps.find-root.outputs.BUNDLE_ROOT }}"
-
-          # Find a .lean file in the project (not lakefile, not .lake)
-          $leanFile = Get-ChildItem "$root\project" -Recurse -Filter "*.lean" |
-            Where-Object { $_.FullName -notlike "*\.lake*" -and $_.FullName -notlike "*lakefile*" } |
-            Select-Object -First 1
-
-          if ($leanFile) {
-            python tests/lsp_smoke.py `
-              "$root\lean\bin" `
-              "${{ steps.lean-path.outputs.LEAN_PATH }}" `
-              "$($leanFile.FullName)" `
-              --timeout 120
-          } else {
-            echo "::warning::No .lean files found"
-          }
-
-      # --- Tier 4: Launcher script integration test ---
-      - name: "Tier 4: Install pytest"
-        run: pip install pytest
-
-      - name: "Tier 4: Launcher script integration test"
-        shell: pwsh
-        env:
-          BUNDLE_ROOT: ${{ steps.find-root.outputs.BUNDLE_ROOT }}
-        run: |
-          python -m pytest tests/test_launcher.py -v
-
-      # --- Tier 5: VSCodium integration smoke test ---
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 18
-
-      - name: "Tier 5: Install GUI test deps"
-        shell: pwsh
-        run: |
-          cd tests/gui
-          npm ci
-          npx tsc
-
-      - name: "Tier 5: VSCodium integration smoke test"
-        shell: pwsh
-        timeout-minutes: 8
-        env:
-          BUNDLE_ROOT: ${{ steps.find-root.outputs.BUNDLE_ROOT }}
-        run: |
-          cd tests/gui
-          node out/run-tests.js
-
-  deploy-screenshots:
-    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    needs: [test-linux-gui, test-linux-arm64-gui, test-macos-gui, test-windows-gui]
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
-    concurrency:
-      group: pages
-      cancel-in-progress: true
-    steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        continue-on-error: true
-        with:
-          name: tier6-screenshots-linux
-          path: site/linux
-
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        continue-on-error: true
-        with:
-          name: tier6-screenshots-linux-arm64
-          path: site/linux-arm64
-
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        continue-on-error: true
-        with:
-          name: tier6-screenshots-macos
-          path: site/macos
-
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        continue-on-error: true
-        with:
-          name: tier6-screenshots-windows
-          path: site/windows
-
-      - name: Create index page
-        run: |
-          cat > site/index.html << 'INDEXEOF'
-          <!DOCTYPE html>
-          <html>
-          <head>
-            <title>Lean 4 Bundle - GUI Test Screenshots</title>
-            <style>
-              body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; }
-              h1 { border-bottom: 1px solid #ddd; padding-bottom: 10px; }
-              .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
-              .grid figure { margin: 0; text-align: center; }
-              .grid img { width: 100%; border: 1px solid #ccc; border-radius: 4px; }
-              .grid figcaption { margin-top: 6px; font-size: 0.9em; color: #555; }
-              .col-header { font-weight: bold; text-align: center; padding-bottom: 4px; border-bottom: 2px solid #888; }
-            </style>
-          </head>
-          <body>
-            <h1>Lean 4 Bundle - GUI Test Screenshots</h1>
-            <p>Latest screenshots from Tier 6 Playwright GUI tests on <code>main</code>. Click any thumbnail for the full-size image.</p>
-            <div class="grid">
-              <div class="col-header">Linux x64</div>
-              <div class="col-header">Linux arm64</div>
-              <div class="col-header">macOS</div>
-              <div class="col-header">Windows</div>
-              <figure><a href="linux/infoview-goals.png"><img src="linux/infoview-goals.png" alt="Linux x64 infoview goals"></a><figcaption>Infoview goals</figcaption></figure>
-              <figure><a href="linux-arm64/infoview-goals.png"><img src="linux-arm64/infoview-goals.png" alt="Linux arm64 infoview goals"></a><figcaption>Infoview goals</figcaption></figure>
-              <figure><a href="macos/infoview-goals.png"><img src="macos/infoview-goals.png" alt="macOS infoview goals"></a><figcaption>Infoview goals</figcaption></figure>
-              <figure><a href="windows/infoview-goals.png"><img src="windows/infoview-goals.png" alt="Windows infoview goals"></a><figcaption>Infoview goals</figcaption></figure>
-              <figure><a href="linux/interaction-error.png"><img src="linux/interaction-error.png" alt="Linux x64 diagnostics"></a><figcaption>Live diagnostics</figcaption></figure>
-              <figure><a href="linux-arm64/interaction-error.png"><img src="linux-arm64/interaction-error.png" alt="Linux arm64 diagnostics"></a><figcaption>Live diagnostics</figcaption></figure>
-              <figure><a href="macos/interaction-error.png"><img src="macos/interaction-error.png" alt="macOS diagnostics"></a><figcaption>Live diagnostics</figcaption></figure>
-              <figure><a href="windows/interaction-error.png"><img src="windows/interaction-error.png" alt="Windows diagnostics"></a><figcaption>Live diagnostics</figcaption></figure>
-              <figure><a href="linux/project-exercise.png"><img src="linux/project-exercise.png" alt="Linux x64 project"></a><figcaption>Project exercise</figcaption></figure>
-              <figure><a href="linux-arm64/project-exercise.png"><img src="linux-arm64/project-exercise.png" alt="Linux arm64 project"></a><figcaption>Project exercise</figcaption></figure>
-              <figure><a href="macos/project-exercise.png"><img src="macos/project-exercise.png" alt="macOS project"></a><figcaption>Project exercise</figcaption></figure>
-              <figure><a href="windows/project-exercise.png"><img src="windows/project-exercise.png" alt="Windows project"></a><figcaption>Project exercise</figcaption></figure>
-            </div>
-          </body>
-          </html>
-          INDEXEOF
-
-      - name: Verify screenshots exist
-        run: |
-          for platform in linux linux-arm64 macos windows; do
-            for f in infoview-goals.png interaction-error.png project-exercise.png; do
-              test -f "site/$platform/$f" || { echo "::warning::Missing screenshot: $platform/$f"; }
-            done
-          done
-
-      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
-
-      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
-        with:
-          path: site
-
-      - name: Deploy to GitHub Pages
-        id: deploy
-        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
-
-  test-macos:
-    runs-on: macos-latest
-    needs: build-macos-arm64
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: '3.12'
-
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: bundle-darwin-arm64
-
-      - name: Extract bundle
-        run: |
-          mkdir bundle
-          python -c "
-          import sys, zipfile; sys.path.insert(0, '.')
-          from download import _safe_extract_zip
-          from pathlib import Path
-          with zipfile.ZipFile('bundle-macos-arm64.zip') as zf:
-              _safe_extract_zip(zf, Path('bundle'))
-          "
-
-      - name: Find bundle root
-        id: find-root
-        run: |
-          root=$(find bundle -mindepth 1 -maxdepth 1 -type d | head -1)
-          echo "BUNDLE_ROOT=$(pwd)/$root" >> "$GITHUB_OUTPUT"
-          echo "Bundle root: $(pwd)/$root"
-          ls "$(pwd)/$root"
-
-      # --- Tier 0: Student experience (no fixups) ---
-      # These checks run with zero CI workarounds — the bundle must work
-      # as-is after extraction, exactly as a student would experience it.
-      # The launcher strips quarantine on macOS; create_zip's
-      # timestamp advance handles olean freshness.  If these fail, the
-      # bundle is broken for students regardless of what later tiers say.
-
-      - name: "Tier 0: Verify executable permissions survived zip"
-        run: |
-          root="${{ steps.find-root.outputs.BUNDLE_ROOT }}"
-          fail=0
-          for f in "$root/lean/bin/lean" "$root/lean/bin/lake" \
-                   "$root/vscodium/VSCodium.app/Contents/MacOS/VSCodium"; do
-            if [ ! -x "$f" ]; then
-              echo "::error::Not executable after unzip: $f"
-              fail=1
-            fi
-          done
-          launcher=$(find "$root" -maxdepth 1 \( -name '*.command' -o -name '*.sh' \) | head -1)
-          if [ -z "$launcher" ] || [ ! -x "$launcher" ]; then
-            echo "::error::No executable launcher found in bundle root"
-            fail=1
-          fi
-          if [ "$fail" -eq 1 ]; then exit 1; fi
-
-      - name: "Tier 0: Verify bundle settings (trust, auto-build, restore)"
-        run: |
-          python3 -c "
-          import json, re, sys
-          def parse_jsonc(text):
-              text = re.sub(r'/\*.*?\*/', '', text, flags=re.DOTALL)
-              text = re.sub(r'//[^\n]*', '', text)
-              text = re.sub(r',\s*([}\]])', r'\1', text)
-              return json.loads(text)
-          root = '${{ steps.find-root.outputs.BUNDLE_ROOT }}'
-          user_settings = parse_jsonc(open(f'{root}/vscodium/data/user-data/User/settings.json').read())
-          ws_settings = {}
-          ws_path = f'{root}/project/.vscode/settings.json'
-          try: ws_settings = parse_jsonc(open(ws_path).read())
-          except FileNotFoundError: pass
-          errors = []
-          # User settings must have trust disabled
-          if user_settings.get('security.workspace.trust.enabled') is not False:
-              errors.append('user settings: security.workspace.trust.enabled not False')
-          if user_settings.get('window.restoreWindows') != 'none':
-              errors.append('user settings: window.restoreWindows not none')
-          # Workspace settings must not override auto-build to true
-          if ws_settings.get('lean4.automaticallyBuildDependencies') is True:
-              errors.append('workspace settings override: lean4.automaticallyBuildDependencies is True')
-          for e in errors: print(f'::error::{e}')
-          sys.exit(1 if errors else 0)
-          "
-
-      - name: "Tier 0: Verify oleans are newer than sources (no touch needed)"
-        run: |
-          python3 -c "
-          import sys
-          from pathlib import Path
-          root = Path('${{ steps.find-root.outputs.BUNDLE_ROOT }}/project')
-          lean_files = list(root.rglob('*.lean'))
-          olean_files = list(root.rglob('*.olean'))
-          if not lean_files or not olean_files:
-              print('No lean/olean files found — skipping timestamp check')
-              sys.exit(0)
-          lean_max = max(f.stat().st_mtime for f in lean_files)
-          olean_min = min(f.stat().st_mtime for f in olean_files)
-          if lean_max >= olean_min:
-              print(f'::error::Stale oleans: max .lean mtime={lean_max}, min .olean mtime={olean_min}')
-              sys.exit(1)
-          print(f'OK: all oleans ({olean_min:.1f}) newer than all sources ({lean_max:.1f})')
-          "
-
-      - name: "Tier 0: Launcher strips quarantine"
-        run: |
-          root="${{ steps.find-root.outputs.BUNDLE_ROOT }}"
-          launcher=$(find "$root" -maxdepth 1 \( -name '*.command' -o -name '*.sh' \) | head -1)
-          if ! grep -q 'xattr -dr com.apple.quarantine' "$launcher"; then
-            echo "::error::Launcher does not contain 'xattr -dr com.apple.quarantine'"
-            exit 1
-          fi
-          # Run quarantine clearing as the launcher would, then verify lean works
-          export BUNDLE_ROOT="$root"
-          xattr -dr com.apple.quarantine "$root" 2>/dev/null || true
-          export PATH="$root/lean/bin:$PATH"
-          export ELAN_HOME="$root/lean"
-          "$root/lean/bin/lean" --version
-
-      # --- Tier 1: Structural integrity ---
-      - name: "Tier 1: Verify bundle structure"
-        run: |
-          python tests/verify_bundle.py "${{ steps.find-root.outputs.BUNDLE_ROOT }}" --platform darwin-arm64
-
-      # --- Tier 1.5: lean binary test ---
-      - name: Test lean binary
-        run: |
-          root="${{ steps.find-root.outputs.BUNDLE_ROOT }}"
-          export PATH="$root/lean/bin:$PATH"
-          lean --version
-
-      - name: Build LEAN_PATH
-        id: lean-path
-        run: |
-          root="${{ steps.find-root.outputs.BUNDLE_ROOT }}"
-          lean_path="$root/lean/lib/lean:$root/project/.lake/build/lib/lean"
-          for pkg_dir in "$root"/project/.lake/packages/*/; do
-            if [ -d "$pkg_dir/.lake/build/lib/lean" ]; then
-              lean_path="$lean_path:$pkg_dir/.lake/build/lib/lean"
-            fi
-          done
-          echo "LEAN_PATH=$lean_path" >> "$GITHUB_OUTPUT"
-
-      # --- Tier 2: lake build --no-build ---
-      - name: "Tier 2: lake build --no-build"
-        run: |
-          root="${{ steps.find-root.outputs.BUNDLE_ROOT }}"
-          export PATH="$root/lean/bin:$PATH"
-          export LEAN_PATH="${{ steps.lean-path.outputs.LEAN_PATH }}"
-          export ELAN_HOME="$root/lean"
-          cd "$root/project"
-          lake build --no-build 2>&1 | head -50
-          rc=${PIPESTATUS[0]}
-          if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then exit "$rc"; fi
-
-      # --- Tier 3: LSP protocol test ---
-      - name: "Tier 3: LSP protocol test"
-        timeout-minutes: 3
-        run: |
-          root="${{ steps.find-root.outputs.BUNDLE_ROOT }}"
-          lean_file=$(find "$root/project" -name "*.lean" ! -path "*/.lake/*" ! -name "lakefile*" | head -1)
-          if [ -n "$lean_file" ]; then
-            python tests/lsp_smoke.py \
-              "$root/lean/bin" \
-              "${{ steps.lean-path.outputs.LEAN_PATH }}" \
-              "$lean_file" \
-              --timeout 120
-          else
-            echo "::warning::No .lean files found"
-          fi
-
-      # --- Tier 4: Launcher script integration test ---
-      - name: "Tier 4: Install pytest"
-        run: pip install pytest
-
-      - name: "Tier 4: Launcher script integration test"
-        env:
-          BUNDLE_ROOT: ${{ steps.find-root.outputs.BUNDLE_ROOT }}
-        run: |
-          python -m pytest tests/test_launcher.py -v
-
-      # --- Tier 5: VSCodium integration smoke test ---
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 18
-
-      - name: "Tier 5: Install GUI test deps"
-        run: |
-          cd tests/gui
-          npm ci
-          npx tsc
-
-      - name: "Tier 5: VSCodium integration smoke test"
-        timeout-minutes: 8
-        env:
-          BUNDLE_ROOT: ${{ steps.find-root.outputs.BUNDLE_ROOT }}
-        run: |
-          cd tests/gui
-          node out/run-tests.js
-
-  test-macos-gui:
-    runs-on: macos-latest
-    needs: build-macos-arm64
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: '3.12'
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 18
-
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: bundle-darwin-arm64
-
-      - name: Extract bundle
-        run: |
-          mkdir bundle
-          python -c "
-          import sys, zipfile; sys.path.insert(0, '.')
-          from download import _safe_extract_zip
-          from pathlib import Path
-          with zipfile.ZipFile('bundle-macos-arm64.zip') as zf:
-              _safe_extract_zip(zf, Path('bundle'))
-          "
-
-      - name: Find bundle root
-        id: find-root
-        run: |
-          root=$(find bundle -mindepth 1 -maxdepth 1 -type d | head -1)
-          echo "BUNDLE_ROOT=$(pwd)/$root" >> "$GITHUB_OUTPUT"
-          echo "Bundle root: $(pwd)/$root"
-
-      # The launcher strips quarantine; replicate here since GUI tests
-      # launch VSCodium directly without running the launcher script.
-      - name: "Clear quarantine (as launcher would)"
-        run: |
-          root="${{ steps.find-root.outputs.BUNDLE_ROOT }}"
-          xattr -dr com.apple.quarantine "$root" 2>/dev/null || true
-
-      # Install elan but no toolchain.  Mimics the most common student
-      # state: they did a Lean course before and have ~/.elan/bin/elan
-      # on their PATH from a prior install, but no toolchain matching
-      # the project's lean-toolchain pin.  Without this, the lean4
-      # extension can't find elan on a clean runner and falls back to
-      # using the bundled `lean` directly — masking the bug where the
-      # bundle isn't laid out as elan expects.
-      - name: "Install elan (no toolchain) to simulate fresh student"
-        run: |
-          curl -sSf https://raw.githubusercontent.com/leanprover/elan/v4.2.1/elan-init.sh \
-            | sh -s -- -y --default-toolchain none
-          echo "$HOME/.elan/bin" >> $GITHUB_PATH
-          # Sanity: elan should be installed but no toolchains present.
-          "$HOME/.elan/bin/elan" --version
-          "$HOME/.elan/bin/elan" toolchain list || true
-
-      - name: "Tier 6: Install Playwright test deps"
-        run: |
-          cd tests/gui-playwright
-          npm ci
-
-      - name: "Tier 6: UI automation tests (infoview + interaction)"
-        timeout-minutes: 15
-        env:
-          BUNDLE_ROOT: ${{ steps.find-root.outputs.BUNDLE_ROOT }}
-        run: |
-          cd tests/gui-playwright
-          npx playwright test --reporter=list
-
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
-        with:
-          name: tier6-screenshots-macos
-          path: tests/gui-playwright/test-results/
-          retention-days: 30
-
-  test-macos-gui-fresh:
-    # Same as test-macos-gui but with no elan installed.  Covers the
-    # "fresh Mac, no prior Lean install" student state — the other
-    # macos-gui job exercises elan-installed-without-toolchain.
-    runs-on: macos-latest
-    needs: build-macos-arm64
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: '3.12'
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 18
-
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: bundle-darwin-arm64
-
-      - name: Extract bundle
-        run: |
-          mkdir bundle
-          python -c "
-          import sys, zipfile; sys.path.insert(0, '.')
-          from download import _safe_extract_zip
-          from pathlib import Path
-          with zipfile.ZipFile('bundle-macos-arm64.zip') as zf:
-              _safe_extract_zip(zf, Path('bundle'))
-          "
-
-      - name: Find bundle root
-        id: find-root
-        run: |
-          root=$(find bundle -mindepth 1 -maxdepth 1 -type d | head -1)
-          echo "BUNDLE_ROOT=$(pwd)/$root" >> "$GITHUB_OUTPUT"
-          echo "Bundle root: $(pwd)/$root"
-
-      - name: "Clear quarantine (as launcher would)"
-        run: |
-          root="${{ steps.find-root.outputs.BUNDLE_ROOT }}"
-          xattr -dr com.apple.quarantine "$root" 2>/dev/null || true
-
-      # Sanity-check that no elan exists at this point.  GitHub macOS
-      # runner images are fresh per job, but if a base image change ever
-      # bakes elan in, this guard fails loudly rather than silently
-      # turning into a duplicate of test-macos-gui.
-      - name: "Sanity: no inherited elan"
-        run: |
-          if [ -e "$HOME/.elan" ]; then
-            echo "::error::Runner unexpectedly has ~/.elan — this job needs a clean slate"
-            ls -la "$HOME/.elan"
-            exit 1
-          fi
-
-      - name: "Tier 6: Install Playwright test deps"
-        run: |
-          cd tests/gui-playwright
-          npm ci
-
-      - name: "Tier 6: UI automation tests (infoview + interaction)"
-        timeout-minutes: 15
-        env:
-          BUNDLE_ROOT: ${{ steps.find-root.outputs.BUNDLE_ROOT }}
-        run: |
-          cd tests/gui-playwright
-          npx playwright test --reporter=list
-
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
-        with:
-          name: tier6-screenshots-macos-fresh
-          path: tests/gui-playwright/test-results/
-          retention-days: 30
-
-  test-windows-gui:
-    runs-on: windows-latest
-    needs: build-windows
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 18
-
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: bundle-windows
-
-      - name: Extract bundle
-        run: Expand-Archive -Path bundle.zip -DestinationPath bundle
-
-      - name: Find bundle root
-        id: find-root
-        shell: pwsh
-        run: |
-          $root = Get-ChildItem -Path bundle -Directory | Select-Object -First 1
-          echo "BUNDLE_ROOT=$($root.FullName)" >> $env:GITHUB_OUTPUT
-          echo "Bundle root: $($root.FullName)"
-
-      # Olean timestamps are now preserved by create_zip (4-second advance).
-
-      # No elan install here — covers the no-prior-Lean Windows student
-      # state.  test-macos-gui exercises the elan-without-toolchain path.
-
-      - name: "Tier 6: Install Playwright test deps"
-        shell: pwsh
-        run: |
-          cd tests/gui-playwright
-          npm ci
-
-      - name: "Tier 6: UI automation tests (infoview + interaction)"
-        timeout-minutes: 15
-        shell: pwsh
-        env:
-          BUNDLE_ROOT: ${{ steps.find-root.outputs.BUNDLE_ROOT }}
-        run: |
-          cd tests/gui-playwright
-          npx playwright test --reporter=list
-
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
-        with:
-          name: tier6-screenshots-windows
-          path: tests/gui-playwright/test-results/
-          retention-days: 30
-
-  # ---------------------------------------------------------------------------
-  # Gate job — require this in branch protection so all CI must pass to merge.
-  # ---------------------------------------------------------------------------
   ci:
     if: always()
     runs-on: ubuntu-latest
     needs:
       - unit-tests
-      - test-linux-offline
-      - test-linux-gui
-      - test-linux-arm64-offline
-      - test-linux-arm64-gui
-      - test-windows
-      - test-macos
-      - test-macos-gui
-      - test-macos-gui-fresh
-      - test-windows-gui
+      - build-windows
+      - build-linux
+      - build-linux-arm64
+      - build-macos-arm64
     steps:
       - name: Check all jobs passed
         if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
