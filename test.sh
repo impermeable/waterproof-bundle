@@ -2,8 +2,11 @@
 # Run all local tests against an existing bundle.
 #
 # Usage:
-#   ./test-local.sh /path/to/bundle-root
+#   ./test-local.sh /path/to/bundle-root [--waterproof]
 #   BUNDLE_ROOT=/path/to/bundle-root ./test-local.sh
+#
+# Pass --waterproof for a bundle built with bundle.py's --waterproof mode;
+# Tier 1 then expects the Waterproof extension instead of lean4.
 #
 # The bundle root should contain: lean/, vscodium/, project/, Start_Lean.{sh,command,cmd}
 #
@@ -15,7 +18,17 @@
 set -euo pipefail
 trap '' USR1 USR2
 
-BUNDLE_ROOT="${1:-${BUNDLE_ROOT:-}}"
+WATERPROOF_FLAG=""
+POSITIONAL=()
+for arg in "$@"; do
+    if [ "$arg" = "--waterproof" ]; then
+        WATERPROOF_FLAG="--waterproof"
+    else
+        POSITIONAL+=("$arg")
+    fi
+done
+
+BUNDLE_ROOT="${POSITIONAL[0]:-${BUNDLE_ROOT:-}}"
 
 if [ -z "$BUNDLE_ROOT" ]; then
     for candidate in /tmp/bundle-local/*-bundle /tmp/bundle-fix*/*-bundle /tmp/bundle-rebuild/*-bundle; do
@@ -27,7 +40,7 @@ if [ -z "$BUNDLE_ROOT" ]; then
 fi
 
 if [ -z "$BUNDLE_ROOT" ] || [ ! -d "$BUNDLE_ROOT" ]; then
-    echo "Usage: $0 /path/to/bundle-root"
+    echo "Usage: $0 /path/to/bundle-root [--waterproof]"
     echo ""
     echo "Build a bundle first with:"
     echo "  python3 bundle.py https://github.com/PatrickMassot/MDD154 --platform linux-x64 --no-zip --work-dir /tmp/bundle-local"
@@ -46,7 +59,7 @@ python3 -m pytest tests/test_assemble.py tests/test_import_closure.py tests/test
 
 echo ""
 echo "=== Tier 1: Bundle structure ==="
-python3 tests/verify_bundle.py "$BUNDLE_ROOT" --platform linux-x64
+python3 tests/verify_bundle.py "$BUNDLE_ROOT" --platform linux-x64 $WATERPROOF_FLAG
 
 echo ""
 echo "=== Tier 4: Launcher script tests ==="
@@ -63,7 +76,10 @@ fi
 # Start Xvfb for headless GUI testing
 XVFB_PID=""
 cleanup() {
-    pkill -f "codium" 2>/dev/null || true
+    # "[c]odium" so the pattern does not match the shell running pkill:
+    # pkill -f matches full command lines, and a bare "codium" kills this
+    # cleanup trap itself before it can stop the editor.
+    pkill -f "[c]odium" 2>/dev/null || true
     [ -n "$XVFB_PID" ] && kill "$XVFB_PID" 2>/dev/null || true
 }
 trap cleanup EXIT

@@ -85,12 +85,20 @@ def test_cross_platform_bundle_is_rejected_before_work_starts() -> None:
         ["--waterproof-vsix", "waterproof.vsix"],
     ],
 )
-def test_open_file_is_rejected_for_windows_waterproof_before_work_starts(
+@pytest.mark.parametrize("platform", ["windows", "linux-x64", "darwin-arm64"])
+def test_open_file_is_rejected_for_waterproof_before_work_starts(
+    platform: str,
     waterproof_args: list[str],
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr(bundle, "_detect_host_platform", lambda: "windows")
+    """--open-file is refused on every platform in Waterproof mode.
+
+    The rejection started out Windows-only, but CI hit the same
+    editorAssociations race on Linux x64 while the arm64 job passed on an
+    identically built bundle, so the file argument is unsafe everywhere.
+    """
+    monkeypatch.setattr(bundle, "_detect_host_platform", lambda: platform)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -98,7 +106,7 @@ def test_open_file_is_rejected_for_windows_waterproof_before_work_starts(
             "bundle.py",
             "https://example.invalid/repo",
             "--platform",
-            "windows",
+            platform,
             *waterproof_args,
             "--open-file",
             "Course/Sheet.lean",
@@ -110,7 +118,7 @@ def test_open_file_is_rejected_for_windows_waterproof_before_work_starts(
 
     assert exc_info.value.code == 2
     assert (
-        "--open-file is not supported for Waterproof bundles on Windows"
+        "--open-file is not supported for Waterproof bundles"
         in capsys.readouterr().err
     )
 

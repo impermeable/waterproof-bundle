@@ -11,6 +11,12 @@ needed.
 CI runs Playwright GUI smoke tests on all supported platforms and publishes
 screenshots to [GitHub Pages](https://leanprover-community.github.io/bundle/).
 
+The GUI tests were ported to Waterproof along with the build matrix: they
+drive the custom editor (`waterproofTue.waterproofEditor`) and the Lean goals
+panel rather than the lean4 extension. Tier 1 structural verification
+(`tests/verify_bundle.py --waterproof`) runs on every build. The offline tier
+(`tests/test_offline.py` under network isolation) is still disabled.
+
 <table>
 <tr><th></th><th>Linux x64</th><th>Linux arm64</th><th>macOS</th><th>Windows</th></tr>
 <tr>
@@ -130,7 +136,7 @@ python3 bundle.py https://github.com/impermeable/introduction-to-proof-sheets-le
 **Pinned Linux x86-64:**
 
 ```bash
-python3 bundle.py https://github.com/impermeable/introduction-to-proof-sheets-lean --ref e62b9166113d3f48b82a09bd5e728fbd779608cc --platform linux-x64 --vscodium-version 1.126.04524 --waterproof-version 0.12.0 --allow-unsolved --work-dir ../tmp/bewijzen-waterproof-linux-x64 --clean-work-dir --output ../bewijzen-waterproof-linux-x64.zip --open-file "Bewijzen/Lecture1/sheet1/_conjunction.lean"
+python3 bundle.py https://github.com/impermeable/introduction-to-proof-sheets-lean --ref e62b9166113d3f48b82a09bd5e728fbd779608cc --platform linux-x64 --vscodium-version 1.126.04524 --waterproof-version 0.12.0 --allow-unsolved --work-dir ../tmp/bewijzen-waterproof-linux-x64 --clean-work-dir --output ../bewijzen-waterproof-linux-x64.zip
 ```
 
 The latest commands intentionally omit all three pins: they use the repository's
@@ -146,7 +152,7 @@ python3 bundle.py https://github.com/impermeable/introduction-to-proof-sheets-le
 **Latest Linux x86-64:**
 
 ```bash
-python3 bundle.py https://github.com/impermeable/introduction-to-proof-sheets-lean --platform linux-x64 --waterproof --allow-unsolved --work-dir ../tmp/bewijzen-waterproof-linux-x64-latest --clean-work-dir --output ../bewijzen-waterproof-linux-x64-latest.zip --open-file "Bewijzen/Lecture1/sheet1/_conjunction.lean"
+python3 bundle.py https://github.com/impermeable/introduction-to-proof-sheets-lean --platform linux-x64 --waterproof --allow-unsolved --work-dir ../tmp/bewijzen-waterproof-linux-x64-latest --clean-work-dir --output ../bewijzen-waterproof-linux-x64-latest.zip
 ```
 
 For ARM64 Linux, replace `linux-x64` with `linux-arm64` and adjust the output
@@ -240,8 +246,8 @@ Students need none of these.
 --open-file NAME
     .lean file to auto-open on the first launch of an extracted bundle
     (default: no file; the workspace opens without an editor tab). Later
-    launches restore the student's editor state. Not supported when combining
-    --waterproof with --platform windows; see Known issues below.
+    launches restore the student's editor state. Not supported for Waterproof
+    bundles on any platform; see Known issues below.
 
 --no-zip
     Assemble the bundle directory without creating a zip
@@ -299,6 +305,13 @@ Run the local Linux x86-64 test harness against an existing bundle:
 ./test.sh /path/to/MDD154-bundle
 ```
 
+For a bundle built with `--waterproof`, pass the flag through so the
+structural checks expect the Waterproof extension rather than lean4:
+
+```bash
+./test.sh /path/to/introduction-to-proof-sheets-lean-bundle --waterproof
+```
+
 This runs the core unit tests, bundle structure verification, launcher tests, and
 Playwright GUI tests (requires Xvfb). Build a bundle first with:
 
@@ -309,14 +322,21 @@ python bundle.py https://github.com/PatrickMassot/MDD154 --platform linux-x64 --
 
 ## Known issues
 
-- **Opening a default Waterproof file on Windows.** Combining `--open-file`,
-  `--waterproof`, and `--platform windows` is rejected. On a cold start, VS Code
+- **Opening a default Waterproof file.** Combining `--open-file` with
+  `--waterproof` is rejected on every platform. On a cold start, VS Code
   currently opens a file argument in its text editor instead of honoring
   `workbench.editorAssociations`; opening the file after startup uses the
   configured custom editor correctly. See
   [VS Code issue #325506](https://github.com/microsoft/vscode/issues/325506).
-  Windows Waterproof bundles therefore open only the project workspace on first
-  launch. Windows bundles using the regular Lean 4 extension are unaffected.
+
+  This was originally believed to be Windows-only. CI then caught it on
+  Linux x64 — the sheet opened in the plain text editor, so no Waterproof
+  webview was ever created — while the arm64 job passed on an identically
+  built bundle, which makes it a race rather than a platform trait. A student
+  hitting the losing side would see their first sheet as raw Lean source, so
+  the flag is now refused for Waterproof bundles everywhere. Waterproof
+  bundles therefore open only the project workspace on first launch; bundles
+  using the regular Lean 4 extension are unaffected.
 
 - **Git shim on Windows.** The lean4 VS Code extension and VS Code's
   built-in git extension both probe for `git` on PATH at startup. Rather
@@ -358,7 +378,6 @@ Several component versions are hardcoded and need periodic bumps:
 | --------------------------------------------- | -------------------------------------- | ----------------------------------- |
 | git shim version string                       | `shim/git_shim.c` (`VERSION_LINE`)     | Must be >= 2.0.0, not 2.25.x/2.26.x |
 | even-better-toml extension                    | `download.py` `LEAN4_EXTENSION_DEPS`   | ID + version                        |
-| elan installer                                | `.github/workflows/build-and-test.yml` | Tag in curl URL                     |
 | GitHub Actions (checkout, setup-python, etc.) | `.github/workflows/build-and-test.yml` | Pinned by commit SHA                |
 
 The **Lean toolchain** version comes from the target project's

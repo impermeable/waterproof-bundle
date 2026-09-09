@@ -445,8 +445,7 @@ def main() -> None:
         default=None,
         help="Lean file to open on the bundle's first launch "
              "(e.g. 'LibDM3.lean'). If not specified, the workspace opens "
-             "without an editor tab. Not supported for Waterproof bundles "
-             "on Windows.",
+             "without an editor tab. Not supported for Waterproof bundles.",
     )
     parser.add_argument(
         "--no-zip",
@@ -489,15 +488,15 @@ def main() -> None:
             f"Build --platform {args.platform} on that platform instead."
         )
 
-    if (
-        args.platform == "windows"
-        and include_waterproof
-        and args.open_file is not None
-    ):
+    if include_waterproof and args.open_file is not None:
         parser.error(
-            "--open-file is not supported for Waterproof bundles on Windows: "
-            "a VS Code cold-start bug ignores workbench.editorAssociations "
-            "for file arguments"
+            "--open-file is not supported for Waterproof bundles: a VS Code "
+            "cold-start bug ignores workbench.editorAssociations for file "
+            "arguments, so the sheet can open in the plain text editor "
+            "instead of Waterproof's custom editor. Originally observed on "
+            "Windows only, but CI caught the same race on Linux x64 (the "
+            "arm64 job passed on the identical bundle), so it is not "
+            "platform-specific -- see microsoft/vscode#325506."
         )
 
     project_name = args.repo_url.rstrip("/").split("/")[-1]
